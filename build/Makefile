@@ -660,7 +660,7 @@ SRCSETUP= prompting.f90 utils_omp.F90 setup_params.f90 \
           set_slab.f90 set_disc.F90 \
           set_cubic_core.f90 set_fixedentropycore.f90 set_softened_core.f90 \
           set_star_utils.f90 relax_star.f90 set_star.f90 set_hierarchical.f90 \
-          set_vfield.f90 set_Bfield.f90 \
+          set_vfield.f90 set_Bfield.f90 set_cylinder.f90 set_stream.f90 \
           ${SETUPFILE}
 
 OBJSETUP1= $(SRCSETUP:.f90=.o)

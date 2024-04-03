@@ -165,6 +165,26 @@ ifeq ($(SETUP), disc)
     IND_TIMESTEPS=yes
 endif
 
+ifeq ($(SETUP), cylinder)
+#   cylinder with a uniform or Gaussian density profile
+    SETUPFILE= setup_cylinder.f90
+    KNOWN_SETUP=yes
+    IND_TIMESTEPS=yes
+    RADIATION=no
+endif
+
+ifeq ($(SETUP), stream)
+#   stream-stream collision in TDEs
+    SETUPFILE= setup_stream.f90
+    KNOWN_SETUP=yes
+    ISOTHERMAL=no
+    GRAVITY=no
+    SRCINJECT= inject_stream.f90
+    IND_TIMESTEPS=yes
+    LIGHTCURVE=yes
+    RADIATION=no
+endif
+
 ifeq ($(SETUP), grtde)
 #   tidal disruption event in general relativity
     SETUPFILE= setup_grtde.f90
