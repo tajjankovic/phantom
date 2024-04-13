@@ -170,6 +170,7 @@ ifeq ($(SETUP), cylinder)
     SETUPFILE= setup_cylinder.f90
     KNOWN_SETUP=yes
     IND_TIMESTEPS=yes
+    PERIODIC=yes
     RADIATION=no
 endif
 
@@ -1057,7 +1058,7 @@ ifeq ($(SETUP), testgr)
 endif
 
 ifeq ($(SETUP), flrw)
-#   constant density FLRW cosmology with perturbations  
+#   constant density FLRW cosmology with perturbations
     GR=yes
     KNOWN_SETUP=yes
     IND_TIMESTEPS=no

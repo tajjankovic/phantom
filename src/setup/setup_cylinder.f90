@@ -230,7 +230,11 @@ subroutine read_setupfile(filename,gamma,ierr)
 
  ! relax cylinder options
  call read_inopt(relax_cylinder_in_setup,'relax_cylinder',db,errcount=nerr)
- if (relax_cylinder_in_setup) call read_options_relax(db,nerr)
+ if (relax_cylinder_in_setup) then
+   call read_inopt(cylinder%tol_dens,'tol_dens',db,errcount=nerr)
+   call read_inopt(cylinder%maxits,'maxits',db,errcount=nerr)
+ endif
+   !call read_options_relax(db,nerr)
  if (nerr /= 0) ierr = ierr + 1
 
  ! option to write density profile to file
@@ -285,7 +289,11 @@ subroutine write_setupfile(filename,gamma)
  ! relaxation options
  write(iunit,"(/,a)") '# relaxation options'
  call write_inopt(relax_cylinder_in_setup,'relax_cylinder','Relax cylinder automatically during setup',iunit)
- if (relax_cylinder_in_setup) call write_options_relax(iunit)
+ if (relax_cylinder_in_setup) then
+   call write_inopt(cylinder%tol_dens,'tol_dens','tolerance on density to stop relaxation',iunit)
+   call write_inopt(cylinder%maxits,'maxits','maximum number of relaxation iterations',iunit)
+ endif
+!   call write_options_relax(iunit)
 
  call write_inopt(write_rho_to_file,'write_rho_to_file','Write density profile(s) to file',iunit)
 

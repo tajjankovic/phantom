@@ -45,16 +45,15 @@ module setcylinder
     real :: yshift
     real :: zshift
     real :: initialtemp
+    real :: tol_dens
+    integer :: maxits
     character(len=120) :: dens_profile
-    character(len=2) :: label ! used to rename relax_star snapshots to relax1, relax2 etc.
+    character(len=2) :: label ! used to rename relax_cylinder snapshots to relax1, relax2 etc.
  end type cylinder_t
 
  public :: cylinder_t
  public :: set_cylinder,set_defaults_cylinder,shift_cylinder
  public :: read_options_cylinder,write_options_cylinder,set_cylinder_interactive
-
- real,    private :: tol_ekin = 1.e-7 ! criteria for being converged
- integer, private :: maxits = 1000
  real,    private :: gammaprev,hfactprev
  integer, private :: ieos_prev
  integer, public :: ierr_setup_errors = 1, &
@@ -76,7 +75,7 @@ subroutine set_defaults_cylinder(cylinder)
  cylinder%np            = 1000
  cylinder%iprofile    = 1
  cylinder%gauss_sigma   = 0.
- cylinder%mcylinder       = 1.0
+ cylinder%mcylinder       = 2.0
  cylinder%rcylinder       = 1.0
  cylinder%zcylinder       = 2.0
  cylinder%ishift    = .true.
@@ -86,6 +85,8 @@ subroutine set_defaults_cylinder(cylinder)
  cylinder%yshift        = 4.
  cylinder%zshift        = 0.
  cylinder%initialtemp   = 0. ! temperature is assigned only if ieos=12 or do_radiation
+ cylinder%tol_dens      = 0.1 ! criteria for being converged
+ cylinder%maxits        = 3000
  cylinder%dens_profile         = 'density_out.tab'
  cylinder%label         = ''
 end subroutine set_defaults_cylinder
@@ -132,6 +133,7 @@ subroutine set_cylinder(id,master,cylinder,xyzh,vxyzu,eos_vars,rad,&
                     relax,write_rho_to_file,&
                     rhomean,npart_total,mask,ierr,itype)
  use centreofmass,       only:reset_centreofmass
+ use boundary,           only:set_boundary
  use dim,                only:do_radiation,gravity,maxvxyzu
  use io,                 only:fatal,error,warning
  use setstar_utils,      only:set_star_thermalenergy
@@ -208,10 +210,17 @@ subroutine set_cylinder(id,master,cylinder,xyzh,vxyzu,eos_vars,rad,&
  !
  ! relax the density profile to achieve nice hydrostatic equilibrium
  !
+
  if (relax) then
+    ! set periodic boundary conditions
+    call set_boundary(x_min=-10*cylinder%rcylinder,x_max=10*cylinder%rcylinder,&
+                      y_min=-10*cylinder%rcylinder,y_max=10*cylinder%rcylinder,&
+                      z_min=-0.5*cylinder%zcylinder,z_max=0.5*cylinder%zcylinder)
+
     if (reduceall_mpi('+',npart)==npart) then
-       call relax_cylinder(npts,den,pres,r,npart,xyzh,cylinder%rcylinder,cylinder%zcylinder,&
-                       ierr_relax,npin=npart_old,label=cylinder%label)
+       call relax_cylinder(npts,den,pres,r,npart,npartoftype,massoftype,xyzh,cylinder%rcylinder,cylinder%zcylinder,&
+                       ierr_relax,npart_old,cylinder%label,cylinder%maxits,cylinder%tol_dens,&
+                       hfact,mask)
     else
        call error('setup_cylinder','cannot run relaxation with MPI setup, please run setup on ONE MPI thread')
     endif
@@ -405,22 +414,33 @@ end subroutine set_cylinder_particles
 ! is symmetric about the origin
 !+
 !-----------------------------------------------------------------------
-subroutine set_cylinder_mc(id,master,rmax,zmax,hfact,np_requested,np,xyzh, &
-                         ierr,nptot,mask)
+subroutine set_cylinder_mc(id,master,r_cyl,z_cyl,hfact,np_requested,np,xyzh, &
+                         ierr,nptot,mask,prepare_relax,r_relax1,r_relax2,z_relax)
  use random,     only:ran2
  integer,          intent(in)    :: id,master,np_requested
  integer,          intent(inout) :: np   ! number of actual particles
- real,             intent(in)    :: rmax,zmax,hfact
+ real,             intent(in)    :: r_cyl,z_cyl,hfact
  real,             intent(out)   :: xyzh(:,:)
  integer,          intent(out)   :: ierr
  integer(kind=8),  intent(inout), optional :: nptot
+ logical,  intent(in), optional :: prepare_relax
+ real,             intent(in), optional :: r_relax1,r_relax2,z_relax
  procedure(mask_prototype) :: mask
  integer :: i,iseed,maxp
  real    :: vol_cylinder,rr,phi,z,psep,dir(2)
  integer(kind=8) :: iparttot
 
+
+ !z_inner = z_cyl
+
+ !if (prepare_relax) then
+   !r_inner = r_relax_inner
+   !r_outer = r_relax_outer
+  ! z_outer = z_relax
+ !endif
+
  iparttot = 0
- vol_cylinder = pi*rmax**2.*zmax
+ vol_cylinder = pi*r_cyl**2.*z_cyl
  ! use mean particle spacing to set initial smoothing lengths
  psep = (vol_cylinder/real(np_requested))**(1./3.)
  iseed = -1978
@@ -431,10 +451,21 @@ subroutine set_cylinder_mc(id,master,rmax,zmax,hfact,np_requested,np,xyzh, &
     !
     ! get a random position on a cylinder
     !
-    rr = ran2(iseed)*rmax ! uniform density
     phi = 2. * pi * ran2(iseed)
-    z = zmax * (ran2(iseed) - 0.5) ! Generate a random z position within [-zmax/2, zmax/2]
     dir  = (/cos(phi),sin(phi)/)
+
+    if (.not.(present(r_relax2)) ) then
+      ! Generate a random radius between 0 and r_cyl
+      rr = r_cyl * sqrt(ran2(iseed))! uniform density
+    else
+      ! Generate a random radius between r_inner and r_outer
+      rr = r_relax1 + (r_relax2 - r_relax1) * sqrt(ran2(iseed))! uniform density
+    endif
+
+    ! Generate a random z position within [-zmax/2, zmax/2]
+    z = z_cyl * (ran2(iseed) - 0.5)
+
+
     !
     ! add TWO particles, symmetric around the origin
     ! CHECK HERE - MAYBE NOT NECESSARY
@@ -538,7 +569,7 @@ subroutine set_cylinder_profile(iprofile,ieos,r,den,npts,Rcylinder,Zcylinder,Mcy
    real, intent(in) :: r
 
    if (iprofile==1) then
-     rhocentre = 1/3.14 !from dotM=2*pi*v*rho_0*int_0^H r*exp(-r^2/H^2)dr
+     rhocentre = mcylinder/(pi*rcylinder**2*zcylinder) !from rho=mass/volume
      densfunc = rhocentre
    elseif (iprofile==2) then
      rhocentre = mcylinder/(zcylinder*0.5*gauss_sigma**2.*(1-EXP(-rcylinder**2./gauss_sigma**2.)))
@@ -567,15 +598,16 @@ end subroutine set_cylinder_profile
 !    xyzh(:,:) - positions and smoothing lengths of all particles
 !+
 !----------------------------------------------------------------
-subroutine relax_cylinder(nt,rho,pr,r,npart,xyzh,Rcylinder,Zcylinder,ierr,npin,label)
+subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinder,Zcylinder,ierr,npin,label,maxits,&
+                          tol_dens,hfact,mask)
  use table_utils,     only:yinterp
  use deriv,           only:get_derivs_global
  use dim,             only:maxp,maxvxyzu,gravity
- use part,            only:vxyzu,rad,massoftype,igas
+ use part,            only:vxyzu,rad,igas,set_particle_type
  use step_lf_global,  only:init_step,step
  use initial,         only:initialise
  use memory,          only:allocate_memory
- use energies,        only:compute_energies,ekin,epot,etherm
+ use energies,        only:compute_energies,ekin,etherm
  use checksetup,      only:check_setup
  use io,              only:error,warning,fatal,id,master
  use fileutils,       only:getnextfilename
@@ -583,19 +615,69 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,xyzh,Rcylinder,Zcylinder,ierr,npin,l
  use physcon,         only:pi
  use io_summary,      only:summary_initialise
  use setstar_utils,   only:set_star_thermalenergy
- integer, intent(in)    :: nt
- integer, intent(inout) :: npart
- real,    intent(in)    :: rho(nt),pr(nt),r(nt),Rcylinder,Zcylinder
- real,    intent(inout) :: xyzh(:,:)
+ integer, intent(in)    :: nt,maxits
+ integer, intent(inout) :: npart,npartoftype(:)
+ !integer, intent(in), optional    :: id,master
+ real, intent(in), optional    :: hfact
+ procedure(mask_prototype), optional :: mask
+ procedure(mask_prototype), pointer  :: my_mask
+ real,    intent(in)    :: rho(nt),pr(nt),r(nt),Rcylinder,Zcylinder,tol_dens
+ real,    intent(inout) :: xyzh(:,:),massoftype(:)
  integer, intent(out)   :: ierr
  integer, intent(in), optional :: npin
  character(len=*), intent(in), optional :: label
- integer :: nits,nerr,nwarn,iunit,i1
- real    :: t,dt,rmserr
+ integer :: nits,nerr,nwarn,iunit,i1,i,ierr1,npart_add,npart_tot,combined_size,npart0
+ real,allocatable :: xyzh_relax(:,:),xyzh_combined(:,:)
+ real    :: t,dt,rmserr,mpart
  real    :: mr(nt),rmax,dtext
  logical :: converged,restart
  logical, parameter :: write_files = .true.
  character(len=20) :: filename,mylabel
+
+ !
+ ! add extra particle surrounding the cylinder
+ !
+ if (present(mask)) then
+    my_mask => mask
+ else
+    my_mask => mask_true
+ endif
+!call set_cylinder_particles(id,master,npts,den,Rcylinder,Zcylinder,hfact,npart,xyzh,npart_total,n,mask)
+ npart_add = 10000
+ npart_tot = npart+npart_add
+ npart_tot = 0
+ allocate(xyzh_relax(4,npart_add))
+
+ call set_cylinder_mc(id,master,Rcylinder,Zcylinder,hfact,npart_add,npart_tot,xyzh_relax,&
+                      ierr1,mask=my_mask,prepare_relax=.true.,r_relax1=1.2*Rcylinder,r_relax2=1.6*Rcylinder)!,z_relax=1.*Zcylinder)
+ ! Allocate the combined array
+ combined_size=npart+npart_add
+ !npart=npart+npart_add
+ mpart=massoftype(igas)
+ npart0=npart
+
+ ! Copy the old and new particles into the combined array
+ allocate(xyzh_combined(1:4, combined_size))
+ xyzh_combined(:, 1:npart) = xyzh(:, 1:npart)
+
+ xyzh_combined(:, npart+1:combined_size) = xyzh_relax(:, :)
+ ! Now, if xyzh was preallocated to be big enough, copy data back
+ xyzh(:, 1:combined_size) = xyzh_combined(:, 1:combined_size)
+ !
+ ! set particle type as gas particles
+ !
+ do i=npart+1,combined_size
+    call set_particle_type(i,igas)
+    vxyzu(4,i)=5e-3
+    !xyzh(4,i)=0.001
+ enddo
+ npart = combined_size
+
+ npartoftype(igas) = npart   ! npart is number on this thread only
+ massoftype(igas) = mpart
+ ! Clean up
+ deallocate(xyzh_combined)
+
 
  i1 = 0
  if (present(npin)) i1 = npin  ! starting position in particle array
@@ -623,7 +705,7 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,xyzh,Rcylinder,Zcylinder,ierr,npin,l
  !
  if (write_files .and. ierr /= 0) then
     if (id==master) print "(a)",' ERROR: pre-existing relaxed star dump(s) do not match'
-    call fatal('relax_star','please delete relax'//trim(mylabel)//'_* and restart...')
+    call fatal('relax_cylinder','please delete relax'//trim(mylabel)//'_* and restart...')
  endif
 
  call set_options_for_relaxation()
@@ -633,20 +715,20 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,xyzh,Rcylinder,Zcylinder,ierr,npin,l
  !
  call check_setup(nerr,nwarn,restart=.true.) ! restart=T allows accreted/masked particles
  if (nerr > 0) then
-    call error('relax_star','cannot relax star because particle setup contains errors')
+    call error('relax_star','cannot relax cylinder because particle setup contains errors')
     call restore_original_options(i1,npart)
     ierr = ierr_setup_errors
     return
  endif
 
- call set_u_and_get_errors(i1,npart,xyzh,vxyzu,rad,nt,mr,rho,r,rmax,rmserr)
+ call set_u_and_get_errors(i1,npart0,xyzh,vxyzu,rad,nt,mr,rho,r,rmax,rmserr)
  !
  ! compute derivatives the first time around (needed if using actual step routine)
  !
  t = 0.
  call allocate_memory(int(min(2*npart,maxp),kind=8))
  call get_derivs_global()
- call set_u_and_get_errors(i1,npart,xyzh,vxyzu,rad,nt,mr,rho,r,rmax,rmserr)
+ call set_u_and_get_errors(i1,npart0,xyzh,vxyzu,rad,nt,mr,rho,r,rmax,rmserr)
  call compute_energies(t)
  !
  ! perform sanity checks
@@ -654,12 +736,12 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,xyzh,Rcylinder,Zcylinder,ierr,npin,l
 
  if (id==master) print "(/,3(a,1pg11.3),/,a,1pg11.3,a,i4)",&
    ' RELAX-A-STAR-O-MATIC: Etherm:',etherm,' Ekin:',ekin, ' R*:',maxval(r), &
-   '       WILL stop when Iter=',maxits
+   '       WILL stop when dens_error < ',tol_dens,' OR Iter=',maxits
 
  if (write_files) then
     if (.not.restart) call write_fulldump(t,filename)
     open(newunit=iunit,file='relax'//trim(mylabel)//'.ev',status='replace')
-    write(iunit,"(a)") '# nits,rmax,etherm,epot,ekin,L2_{err}'
+    write(iunit,"(a)") '# nits,rmax,etherm,ekin,L2_{err}'
  endif
  converged = .false.
  dt = epsilon(0.) ! To avoid error in sink-gas substepping
@@ -671,24 +753,27 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,xyzh,Rcylinder,Zcylinder,ierr,npin,l
     !
     ! shift particles by one "timestep"
     !
-    call shift_particles(i1,npart,xyzh,vxyzu,Rcylinder,Zcylinder,dt)
+    call shift_particles(i1,npart0,xyzh,vxyzu,Rcylinder,Zcylinder,dt)
+    !call shift_particles(i1,npart,xyzh_combined,vxyzu,Rcylinder,Zcylinder,dt)
+
+
 
     !
     ! reset thermal energy and calculate information
     !
-    call set_u_and_get_errors(i1,npart,xyzh,vxyzu,rad,nt,mr,rho,r,rmax,rmserr)
+    call set_u_and_get_errors(i1,npart0,xyzh,vxyzu,rad,nt,mr,rho,r,rmax,rmserr)
     !
     ! compute energies and check for convergence
     !
     call compute_energies(t)
-    converged = (ekin > 0. .and. ekin/abs(epot) < tol_ekin) !.and. rmserr < 0.01*tol_dens)
+    converged = (ekin > 0. .and.  rmserr < tol_dens)
     !
     ! print information to screen
     !
     if (id==master .and. mod(nits,10)==0 .or. nits==1) then
       print "(a,i4,a,i4,a,2pf6.2,2(a,1pg11.3))",&
-            ' Relaxing star: Iter',nits,'/',maxits, &
-            ', dens error:',rmserr,'%, R*:',rmax,' Ekin/Epot:',ekin/abs(epot)
+            ' Relaxing cylinder: Iter',nits,'/',maxits, &
+            ', dens error:',rmserr,'%, Rcylinder:',rmax
     endif
     !
     ! additional diagnostic output, mainly for debugging/checking
@@ -697,7 +782,7 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,xyzh,Rcylinder,Zcylinder,ierr,npin,l
        !
        ! write information to the relax.ev file
        !
-       write(iunit,*) nits,rmax,etherm,epot,ekin,rmserr
+       write(iunit,*) nits,rmax,etherm,ekin,rmserr
        !
        ! write dump files
        !
@@ -719,7 +804,7 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,xyzh,Rcylinder,Zcylinder,ierr,npin,l
           call flush(iunit)
 
           ! restore the fake thermal energy profile
-          call set_u_and_get_errors(i1,npart,xyzh,vxyzu,rad,nt,mr,rho,r,rmax,rmserr)
+          call set_u_and_get_errors(i1,npart0,xyzh,vxyzu,rad,nt,mr,rho,r,rmax,rmserr)
        endif
     endif
  enddo
@@ -728,7 +813,7 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,xyzh,Rcylinder,Zcylinder,ierr,npin,l
  ! warn if relaxation finished due to hitting nits=nitsmax
  !
  if (.not.converged) then
-    call warning('relax_star','relaxation did not converge, just reached max iterations')
+    call warning('relax_cylinder','relaxation did not converge, just reached max iterations')
     ierr = ierr_notconverged
  else
     if (id==master) print "(5(a,/))",&
@@ -764,14 +849,14 @@ subroutine shift_particles(i1, npart, xyzh, vxyzu, r_cylinder, h_cylinder,dtmin)
     real, intent(inout) :: xyzh(:,:), vxyzu(:,:)
     real, intent(in) :: r_cylinder, h_cylinder
     real, intent(out)   :: dtmin
-    real :: dti, rhoi, cs, hi,force_const
-    real :: dx(3), distance_from_axis, distance_from_plane
+    real :: dti, rhoi, cs, hi,force_const!,vr,v_theta
+    real :: dx(3), distance_from_axis,restoring_force_mag
     integer :: i,nlargeshift
 
     ! shift particles asynchronously
     dtmin = huge(dtmin)
     nlargeshift = 0
-    force_const=1e-3
+    force_const=1e-2
     fext(1:3,:) = 0.0
 
     do i = i1 + 1, npart
@@ -779,36 +864,50 @@ subroutine shift_particles(i1, npart, xyzh, vxyzu, r_cylinder, h_cylinder,dtmin)
         rhoi = rhoh(hi, massoftype(igas))
         cs = get_spsound(ieos, xyzh(:,i), rhoi, vxyzu(:,i))
         dti = 0.3 * hi / cs   ! local Courant timestep, i.e., h/cs
-
+        !dti=0.1
         ! Initialize external force to zero
 
         ! Calculate distance from the axis of the cylinder
-        distance_from_axis = sqrt(xyzh(1, i)**2 + xyzh(2, i)**2)
-        ! Calculate distance from the mid-plane of the cylinder
-        distance_from_plane = abs(xyzh(3, i)) - h_cylinder / 2.0
-
-        ! Wrap around the z-coordinate if it goes beyond the cylinder half-height
-        if (distance_from_plane > 0.0) then
-            xyzh(3, i) = xyzh(3, i) - sign(h_cylinder, xyzh(3, i))
-        endif
+        distance_from_axis = sqrt(xyzh(1, i)**2. + xyzh(2, i)**2.)
 
         ! Apply restoring force towards the cylinder's boundary
-        if (distance_from_axis>(r_cylinder-hi)) then
-        !if (distance_from_axis>(0.9*r_cylinder)) then
-          fext(1, i) = -force_const * (xyzh(1, i) / distance_from_axis)
-          fext(2, i) = -force_const * (xyzh(2, i) / distance_from_axis)
+        !if (distance_from_axis>(r_cylinder-hi)) then
+        if (distance_from_axis > r_cylinder-hi) then
+            ! Calculate the magnitude of the force, could be a function of the distance
+            ! A simple linear force that increases with distance:
+            restoring_force_mag = force_const*(distance_from_axis / r_cylinder)**0.9
+
+            ! Subtract the force vector to point towards the axis
+            ! Normalize the direction vector (x/r, y/r) and multiply by the magnitude
+            fext(1,i) = fext(1,i) - restoring_force_mag * (xyzh(1,i) / distance_from_axis)
+            fext(2,i) = fext(2,i) - restoring_force_mag * (xyzh(2,i) / distance_from_axis)
         endif
+        ! fix the direction of radial velocity
+        ! Check if particle is outside the cylinder
+        !if (distance_from_axis > r_cylinder-hi) then
+        !    damping_factor=1
+        !    vr = (vxyzu(1, i) * xyzh(1, i) + vxyzu(2, i) * xyzh(2, i)) / distance_from_axis
+        !    vr = - damping_factor * vr
+        !    v_theta = (-vxyzu(1, i) * xyzh(2, i) + vxyzu(2, i) * xyzh(1, i)) / distance_from_axis
+
+            ! Convert back to Cartesian velocity components
+        !    vxyzu(1, i) = vr * (xyzh(1, i) / distance_from_axis) + v_theta * (-xyzh(2, i) / distance_from_axis)
+        !    vxyzu(2, i) = vr * (xyzh(2, i) / distance_from_axis) + v_theta * ( xyzh(1, i) / distance_from_axis)
+        !endif
 
         ! Calculate the asynchronous shift
-        dx = 0.5 * dti**2 * (fxyzu(1:3, i) + fext(1:3, i))
+
+        dx = 0.5 * dti**2 * (fxyzu(1:3, i))! + fext(1:3, i))
         if (dot_product(dx,dx) > hi**2) then
            dx = dx / sqrt(dot_product(dx,dx)) * hi  ! Avoid large shift in particle position
            nlargeshift = nlargeshift + 1
         endif
+
         ! Apply the shift
         xyzh(1:3, i) = xyzh(1:3, i) + dx
         ! Update the velocities based on the shift
         vxyzu(1:3, i) = dx / dti
+
         dtmin = min(dtmin,dti)   ! used to print a "time" in the output (but it is fake)
     enddo
     if (nlargeshift > 0) print*,'Warning: Restricted dx for ', nlargeshift, 'particles'
@@ -845,7 +944,7 @@ end subroutine set_options_for_relaxation
 
 !----------------------------------------------------------------
 !+
-!  reset the thermal energy to be exactly p(r)/((gam-1)*rho(r))
+!  reset the thermal pressure to be exactly p(r)/((gam-1)*rho(r))
 !  according to the desired p(r) and rho(r)
 !  also compute error between true rho(r) and desired rho(r)
 !+
@@ -872,6 +971,7 @@ subroutine set_u_and_get_errors(i1, npart, xyzh, vxyzu, rad, nt, mr, rhotab,rtab
 
 
     Pfactor = 5e-6 ! Target pressure at position ri
+    Pfactor = 5e-5 ! Target pressure at position ri
 
     rmax = 0.
     rmserr = 0.
@@ -883,15 +983,13 @@ subroutine set_u_and_get_errors(i1, npart, xyzh, vxyzu, rad, nt, mr, rhotab,rtab
         ri = sqrt(dot_product(xyzh(1:2,i), xyzh(1:2,i)))  ! Calculate radial distance from the cylinder axis
         !rhotarget = yinterp(rho,mr,ri)  ! Target density at position ri
         rhotarget = yinterp(rhotab,rtab,ri)  ! Target density at position ri
-
         rhoi = rhoh(xyzh(4,i), massoftype(igas))  ! Actual density
 
         ! Calculate target pressure and adjust internal energy accordingly
         Ptarget = Pfactor * (rhoi / rhotarget)
         !if (fix_entrop) then
         !    vxyzu(4,i) = (Pratio * rhoi**(gamma-1.0)) / (gamma - 1.0)
-        vxyzu(4,i) = Ptarget / (rhoi * (gamma - 1.0))
-        !endif
+        vxyzu(4,i) = Ptarget / (rhoi * (gamma - 1.0)) !u=1e-5
 
         ! Update rms error calculation
         rmserr = rmserr + (rhotarget - rhoi)**2
@@ -943,13 +1041,14 @@ subroutine restore_original_options(i1,npart)
  idamp = 0
  damp = 0.
  vxyzu(1:3,i1+1:npart) = 0.
+ vxyzu(4,i1+1:npart) = 1e-5 ! maybe change later?
 
 end subroutine restore_original_options
 
 
 !----------------------------------------------------------------
 !+
-!  check if a previous snapshot exists of the relaxed star
+!  check if a previous snapshot exists of the relaxed cylinder
 !+
 !----------------------------------------------------------------
 subroutine check_for_existing_file(filename,npart,mgas,xyzh,vxyzu,restart,ierr)
@@ -1083,7 +1182,7 @@ subroutine set_cylinder_interactive(id,master,cylinder,ieos)
 
  ! resolution
  if (cylinder%iprofile > 0) then
-    call prompt('Enter the approximate number of particles in the sphere ',cylinder%np,0)
+    call prompt('Enter the approximate number of particles in the cylinder ',cylinder%np,0)
  endif
 
  ! cylinder properties
@@ -1116,7 +1215,7 @@ end subroutine set_cylinder_interactive
 
 !-----------------------------------------------------------------------
 !+
-!  read setupfile options needed for a star
+!  read setupfile options needed for a cylinder
 !+
 !-----------------------------------------------------------------------
 subroutine read_options_cylinder(cylinder,ieos,db,nerr,label)
