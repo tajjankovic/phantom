@@ -38,7 +38,7 @@ subroutine modify_dump(npart,npartoftype,massoftype,xyzh,vxyzu)
  !--set the center and the radius and the height of the cylinder
  !
  center(:)=0.
- radius=60.
+ radius=1.1 !initially radius=60
  zmax=5.0
  !
  !--removing particles
@@ -50,4 +50,3 @@ subroutine modify_dump(npart,npartoftype,massoftype,xyzh,vxyzu)
 end subroutine modify_dump
 
 end module moddump
-

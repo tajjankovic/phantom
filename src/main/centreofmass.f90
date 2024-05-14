@@ -45,13 +45,13 @@ subroutine reset_centreofmass(npart,xyzh,vxyzu,nptmass,xyzmh_ptmass,vxyz_ptmass)
  else
     call get_centreofmass(xcom,vcom,npart,xyzh,vxyzu)
  endif
-
  xcomold = xcom
  vcomold = vcom
  do i=1,npart
     xyzh(1:3,i) = xyzh(1:3,i) - xcom(1:3)
     vxyzu(1:3,i) = vxyzu(1:3,i) - vcom(1:3)
  enddo
+
  if (present(xyzmh_ptmass) .and. present(vxyz_ptmass) .and. present(nptmass)) then
     do i=1,nptmass
        xyzmh_ptmass(1:3,i) = xyzmh_ptmass(1:3,i) - xcom(1:3)
@@ -61,6 +61,7 @@ subroutine reset_centreofmass(npart,xyzh,vxyzu,nptmass,xyzmh_ptmass,vxyz_ptmass)
  else
     call get_centreofmass(xcom,vcom,npart,xyzh,vxyzu)
  endif
+
  write(iprint,"(' reset CofM: (',3(es9.2,1x),') -> (',3(es9.2,1x),')')") xcomold,xcom
 
  return

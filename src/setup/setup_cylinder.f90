@@ -147,7 +147,6 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  ! finish/deallocate equation of state tables
  !
  call finish_eos(ieos,ierr)
-
 end subroutine setpart
 
 !-----------------------------------------------------------------------

@@ -224,6 +224,7 @@ subroutine set_cylinder(id,master,cylinder,xyzh,vxyzu,eos_vars,rad,&
     else
        call error('setup_cylinder','cannot run relaxation with MPI setup, please run setup on ONE MPI thread')
     endif
+
  endif
 
  !
@@ -248,8 +249,14 @@ subroutine set_cylinder(id,master,cylinder,xyzh,vxyzu,eos_vars,rad,&
  !
  ! shift cylinder to requested position and velocity
  !
- if (cylinder%ishift) call shift_cylinder(npart,xyzh,cylinder%rotate_theta,cylinder%rotate_phi,cylinder%xshift,cylinder%yshift,&
+ if (cylinder%ishift) then
+   call shift_cylinder(npart,xyzh,cylinder%rotate_theta,cylinder%rotate_phi,cylinder%xshift,cylinder%yshift,&
                                       cylinder%zshift)
+ endif
+ ! change boundaries again to arbitrary large values of avoid "particles out bounds" errors
+ call set_boundary(x_min=-100*cylinder%rcylinder,x_max=100*cylinder%rcylinder,&
+                  y_min=-100*cylinder%rcylinder,y_max=100*cylinder%rcylinder,&
+                  z_min=-100*cylinder%zcylinder,z_max=100*cylinder%zcylinder)
 
  !
  ! give the particles requested particle type:
@@ -465,7 +472,6 @@ subroutine set_cylinder_mc(id,master,r_cyl,z_cyl,hfact,np_requested,np,xyzh, &
     ! Generate a random z position within [-zmax/2, zmax/2]
     z = z_cyl * (ran2(iseed) - 0.5)
 
-
     !
     ! add TWO particles, symmetric around the origin
     ! CHECK HERE - MAYBE NOT NECESSARY
@@ -572,8 +578,8 @@ subroutine set_cylinder_profile(iprofile,ieos,r,den,npts,Rcylinder,Zcylinder,Mcy
      rhocentre = mcylinder/(pi*rcylinder**2*zcylinder) !from rho=mass/volume
      densfunc = rhocentre
    elseif (iprofile==2) then
-     rhocentre = mcylinder/(zcylinder*0.5*gauss_sigma**2.*(1-EXP(-rcylinder**2./gauss_sigma**2.)))
-     !from mcylinder=2*pi*rho_0*int_0^Rcylinder r*exp(-r^2/H^2)dr
+     rhocentre = mcylinder/(zcylinder*pi*gauss_sigma**2.*(1-EXP(-rcylinder**2./gauss_sigma**2.)))
+     !from mcylinder=2*pi*z*rho_0*int_0^Rcylinder r*exp(-r^2/H^2)dr
      !https://www.wolframalpha.com/input?i=integrate+%5Bx*exp%28-x%5E2%2F%28S%5E2%29%29%2C+%7Bx%2C0%2CH%7D%5D
      densfunc = rhocentre*EXP(-r**2./gauss_sigma**2.)
    endif
@@ -588,7 +594,7 @@ end subroutine set_cylinder_profile
 !+
 !  relax a cylinder to hydrostatic equilibrium. We run the main
 !  code but with a fake equation of state, low neighbour number
-!  and fixing the entropy as a function of r
+!  and fixing the thermal energy as a function of r
 !
 !  IN:
 !    rho(nt)   - tabulated density as function of r (in code units)
@@ -603,7 +609,7 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  use table_utils,     only:yinterp
  use deriv,           only:get_derivs_global
  use dim,             only:maxp,maxvxyzu,gravity
- use part,            only:vxyzu,rad,igas,set_particle_type
+ use part,            only:vxyzu,rad,igas,set_particle_type,kill_particle,shuffle_part
  use step_lf_global,  only:init_step,step
  use initial,         only:initialise
  use memory,          only:allocate_memory
@@ -635,7 +641,7 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  character(len=20) :: filename,mylabel
 
  !
- ! add extra particle surrounding the cylinder
+ ! add extra particles surrounding the cylinder
  !
  if (present(mask)) then
     my_mask => mask
@@ -643,13 +649,13 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
     my_mask => mask_true
  endif
 !call set_cylinder_particles(id,master,npts,den,Rcylinder,Zcylinder,hfact,npart,xyzh,npart_total,n,mask)
- npart_add = 10000
+ npart_add = 50000
  npart_tot = npart+npart_add
  npart_tot = 0
  allocate(xyzh_relax(4,npart_add))
 
  call set_cylinder_mc(id,master,Rcylinder,Zcylinder,hfact,npart_add,npart_tot,xyzh_relax,&
-                      ierr1,mask=my_mask,prepare_relax=.true.,r_relax1=1.2*Rcylinder,r_relax2=1.6*Rcylinder)!,z_relax=1.*Zcylinder)
+                      ierr1,mask=my_mask,prepare_relax=.true.,r_relax1=1.001*Rcylinder,r_relax2=1.6*Rcylinder)!,z_relax=1.*Zcylinder)
  ! Allocate the combined array
  combined_size=npart+npart_add
  !npart=npart+npart_add
@@ -668,7 +674,7 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  !
  do i=npart+1,combined_size
     call set_particle_type(i,igas)
-    vxyzu(4,i)=5e-3
+    vxyzu(4,i)=1e-4
     !xyzh(4,i)=0.001
  enddo
  npart = combined_size
@@ -677,6 +683,7 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  massoftype(igas) = mpart
  ! Clean up
  deallocate(xyzh_combined)
+ deallocate(xyzh_relax)
 
 
  i1 = 0
@@ -808,14 +815,28 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
        endif
     endif
  enddo
- if (write_files) close(iunit)
+
+ !
+ ! Delete extra particles used for relaxation - this is not working due to "malloc(): corrupted top size"
+ !
+ !do i=npart0+1,combined_size
+!    call kill_particle(i,npartoftype)
+ !enddo
+ !call shuffle_part(npart)
+ !if (npart /= sum(npartoftype)) call fatal('del_dead_part_outside_sphere','particles not conserved')
+
+
+ if (write_files) close(iunit) ! maybe this needs to be uncommented
+ print*,'write_files',write_files
  !
  ! warn if relaxation finished due to hitting nits=nitsmax
  !
+
  if (.not.converged) then
     call warning('relax_cylinder','relaxation did not converge, just reached max iterations')
     ierr = ierr_notconverged
  else
+
     if (id==master) print "(5(a,/))",&
     "                             _                    _ ",&
     "                    _ __ ___| | __ ___  _____  __| |",&
@@ -828,6 +849,39 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  !
  call restore_original_options(i1,npart)
 
+
+ !do i=npart0+1,combined_size
+!    vxyzu(4,i)=0.
+! enddo
+
+ !npartoftype(igas) = npart
+ !print*,'xyzh',xyzh(1, 10001)
+ !xyzh(:, 1:combined_size) = 0.
+ !print*,'xyzh',xyzh(1, 10001)
+
+
+ !if (allocated(xyzh)) then
+!    reallocate(xyzh(1:4, npart))
+ !endif
+
+ !
+ ! Reallocate arrays
+ !
+ ! Store current data
+ !allocate(xyzh_temp(4, npart))
+ !xyzh_temp = xyzh
+
+ ! Reallocate xyzh with new size
+ !deallocate(xyzh)
+ !allocate(xyzh(4, npart))
+
+ ! Copy back necessary data
+ !xyzh = xyzh_temp(:, 1:npart)
+
+ ! Clean up
+ !deallocate(xyzh_temp)
+
+ print*,'npart',npart
 end subroutine relax_cylinder
 
 
@@ -871,17 +925,15 @@ subroutine shift_particles(i1, npart, xyzh, vxyzu, r_cylinder, h_cylinder,dtmin)
         distance_from_axis = sqrt(xyzh(1, i)**2. + xyzh(2, i)**2.)
 
         ! Apply restoring force towards the cylinder's boundary
-        !if (distance_from_axis>(r_cylinder-hi)) then
-        if (distance_from_axis > r_cylinder-hi) then
+        !if (distance_from_axis > r_cylinder-hi) then
             ! Calculate the magnitude of the force, could be a function of the distance
             ! A simple linear force that increases with distance:
-            restoring_force_mag = force_const*(distance_from_axis / r_cylinder)**0.9
-
+        !    restoring_force_mag = force_const*(distance_from_axis / r_cylinder)**0.9
             ! Subtract the force vector to point towards the axis
             ! Normalize the direction vector (x/r, y/r) and multiply by the magnitude
-            fext(1,i) = fext(1,i) - restoring_force_mag * (xyzh(1,i) / distance_from_axis)
-            fext(2,i) = fext(2,i) - restoring_force_mag * (xyzh(2,i) / distance_from_axis)
-        endif
+        !    fext(1,i) = fext(1,i) - restoring_force_mag * (xyzh(1,i) / distance_from_axis)
+        !    fext(2,i) = fext(2,i) - restoring_force_mag * (xyzh(2,i) / distance_from_axis)
+        !endif
         ! fix the direction of radial velocity
         ! Check if particle is outside the cylinder
         !if (distance_from_axis > r_cylinder-hi) then
@@ -907,6 +959,7 @@ subroutine shift_particles(i1, npart, xyzh, vxyzu, r_cylinder, h_cylinder,dtmin)
         xyzh(1:3, i) = xyzh(1:3, i) + dx
         ! Update the velocities based on the shift
         vxyzu(1:3, i) = dx / dti
+
 
         dtmin = min(dtmin,dti)   ! used to print a "time" in the output (but it is fake)
     enddo
@@ -970,8 +1023,8 @@ subroutine set_u_and_get_errors(i1, npart, xyzh, vxyzu, rad, nt, mr, rhotab,rtab
     rho1 = yinterp(rhotab,rtab,0.)
 
 
-    Pfactor = 5e-6 ! Target pressure at position ri
-    Pfactor = 5e-5 ! Target pressure at position ri
+    Pfactor = 3e-6 ! Target pressure at position ri
+    !Pfactor = 5e-6 ! Target pressure at position ri
 
     rmax = 0.
     rmserr = 0.
