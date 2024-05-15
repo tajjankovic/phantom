@@ -138,7 +138,7 @@ subroutine set_cylinder(id,master,cylinder,xyzh,vxyzu,eos_vars,rad,&
  use io,                 only:fatal,error,warning
  use setstar_utils,      only:set_star_thermalenergy
  use radiation_utils,    only:set_radiation_and_gas_temperature_equal
- use part,               only:igas,set_particle_type,ilum
+ use part,               only:igas,set_particle_type,ilum,kill_particle,shuffle_part
  use extern_densprofile, only:write_rhotab
  use unifdis,            only:mask_prototype
  use physcon,            only:pi
@@ -225,7 +225,14 @@ subroutine set_cylinder(id,master,cylinder,xyzh,vxyzu,eos_vars,rad,&
        call error('setup_cylinder','cannot run relaxation with MPI setup, please run setup on ONE MPI thread')
     endif
 
+
  endif
+
+
+
+ !if (npart /= sum(npartoftype)) call fatal('del_dead_part_outside_sphere','particles not conserved')
+
+
 
  !
  ! Reset centre of mass (again)
@@ -639,6 +646,7 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  logical :: converged,restart
  logical, parameter :: write_files = .true.
  character(len=20) :: filename,mylabel
+ integer :: high, low, dN
 
  !
  ! add extra particles surrounding the cylinder
@@ -655,7 +663,7 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  allocate(xyzh_relax(4,npart_add))
 
  call set_cylinder_mc(id,master,Rcylinder,Zcylinder,hfact,npart_add,npart_tot,xyzh_relax,&
-                      ierr1,mask=my_mask,prepare_relax=.true.,r_relax1=1.001*Rcylinder,r_relax2=1.6*Rcylinder)!,z_relax=1.*Zcylinder)
+                      ierr1,mask=my_mask,prepare_relax=.true.,r_relax1=1.01*Rcylinder,r_relax2=1.6*Rcylinder)!,z_relax=1.*Zcylinder)
  ! Allocate the combined array
  combined_size=npart+npart_add
  !npart=npart+npart_add
@@ -675,7 +683,6 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  do i=npart+1,combined_size
     call set_particle_type(i,igas)
     vxyzu(4,i)=1e-4
-    !xyzh(4,i)=0.001
  enddo
  npart = combined_size
 
@@ -817,20 +824,30 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  enddo
 
  !
- ! Delete extra particles used for relaxation - this is not working due to "malloc(): corrupted top size"
- !
- !do i=npart0+1,combined_size
-!    call kill_particle(i,npartoftype)
- !enddo
- !call shuffle_part(npart)
- !if (npart /= sum(npartoftype)) call fatal('del_dead_part_outside_sphere','particles not conserved')
+ ! Incrementally delete particles used for relaxation alternating between low and high
+ ! (I was getting "bad allocation" errors but if I incrementally delete while alternating there are no errors)
+ high = 55000
+ low = 5001
+ dN = 0
+ do while (low <= high)
+      if (mod(dN, 2) == 0) then
+          i = low
+      else
+          i = high
+          high = high - 1
+      end if
+      call kill_particle(i, npartoftype)
+      call shuffle_part(npart)
+      dN = dN + 1
+ end do
 
+ if (write_files) close(iunit)
 
- if (write_files) close(iunit) ! maybe this needs to be uncommented
- print*,'write_files',write_files
  !
  ! warn if relaxation finished due to hitting nits=nitsmax
  !
+
+
 
  if (.not.converged) then
     call warning('relax_cylinder','relaxation did not converge, just reached max iterations')
@@ -850,38 +867,8 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  call restore_original_options(i1,npart)
 
 
- !do i=npart0+1,combined_size
-!    vxyzu(4,i)=0.
-! enddo
-
- !npartoftype(igas) = npart
- !print*,'xyzh',xyzh(1, 10001)
- !xyzh(:, 1:combined_size) = 0.
- !print*,'xyzh',xyzh(1, 10001)
 
 
- !if (allocated(xyzh)) then
-!    reallocate(xyzh(1:4, npart))
- !endif
-
- !
- ! Reallocate arrays
- !
- ! Store current data
- !allocate(xyzh_temp(4, npart))
- !xyzh_temp = xyzh
-
- ! Reallocate xyzh with new size
- !deallocate(xyzh)
- !allocate(xyzh(4, npart))
-
- ! Copy back necessary data
- !xyzh = xyzh_temp(:, 1:npart)
-
- ! Clean up
- !deallocate(xyzh_temp)
-
- print*,'npart',npart
 end subroutine relax_cylinder
 
 
@@ -918,6 +905,8 @@ subroutine shift_particles(i1, npart, xyzh, vxyzu, r_cylinder, h_cylinder,dtmin)
         rhoi = rhoh(hi, massoftype(igas))
         cs = get_spsound(ieos, xyzh(:,i), rhoi, vxyzu(:,i))
         dti = 0.3 * hi / cs   ! local Courant timestep, i.e., h/cs
+        !dti = 0.1 * hi / cs   ! local Courant timestep, i.e., h/cs
+
         !dti=0.1
         ! Initialize external force to zero
 
@@ -1022,9 +1011,7 @@ subroutine set_u_and_get_errors(i1, npart, xyzh, vxyzu, rad, nt, mr, rhotab,rtab
     ! real function return_user_desired_target_pressure(r)
     rho1 = yinterp(rhotab,rtab,0.)
 
-
-    Pfactor = 3e-6 ! Target pressure at position ri
-    !Pfactor = 5e-6 ! Target pressure at position ri
+    Pfactor = 2e-6 ! Target pressure at position ri
 
     rmax = 0.
     rmserr = 0.

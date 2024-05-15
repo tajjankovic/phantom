@@ -55,7 +55,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use units,           only:set_units,select_unit
  use kernel,          only:hfact_default
  use eos,             only:init_eos,finish_eos,gmw
- use part,            only:nptmass,xyzmh_ptmass,vxyz_ptmass,eos_vars,rad
+ use part,            only:nptmass,xyzmh_ptmass,vxyz_ptmass,eos_vars,rad,kill_particle,shuffle_part
  use mpiutils,        only:reduceall_mpi
  use mpidomain,       only:i_belong
  use setup_params,    only:rhozero,npart_total
@@ -69,9 +69,11 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  real,              intent(inout) :: time
  character(len=20), intent(in)    :: fileprefix
  real,              intent(out)   :: vxyzu(:,:)
- integer                          :: ierr
+ integer                          :: ierr,i
  logical                          :: setexists
  character(len=120)               :: setupfile,inname
+ integer :: high, low, step
+
  !
  ! Initialise parameters, including those that will not be included in *.setup
  !
@@ -143,6 +145,8 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
                massoftype,hfact,xyzmh_ptmass,vxyz_ptmass,nptmass,ieos,polyk,gamma,&
                relax_cylinder_in_setup,write_rho_to_file,&
                rhozero,npart_total,i_belong,ierr)
+
+
  !
  ! finish/deallocate equation of state tables
  !
