@@ -9,6 +9,18 @@
 ! Stores simulation data to avoid reading it at every timestep
 !
 ! :References: None
+!
+! Handles stream injection for simulations of the stream self-crossing in TDEs
+!
+!
+! :Owner: Taj Jankovič
+!
+!
+
+
+!
+! Stores particle positions in the cylinder because cylinder is cyclically rearranged
+!
 module store_simulation_data
     implicit none
     ! Parameters
@@ -21,25 +33,12 @@ module store_simulation_data
     ! Status flag to indicate if data has been initialized
     logical :: is_initialized = .false.
     logical :: identical_streams = .false.
-
 end module store_simulation_data
 
 
 
 module inject
-!
-! Handles stream injection for simulations of the stream self-crossing in TDEs
-!
-! :References: None
-!
-! :Owner: Taj Jankovič & Daniel Price
-!
-! :Runtime parameters:
-!   -
-!
-! :Dependencies: boundary, eos, infile_utils, io, part, partinject,
-!   physcon, units
-!
+
  implicit none
  character(len=*), parameter, public :: inject_type = 'selfcrossing'
  public :: init_inject,inject_particles,write_options_inject,read_options_inject
@@ -103,7 +102,7 @@ end subroutine init_inject
 !+
 !-----------------------------------------------------------------------
 subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,&
-                            npart,npartoftype,dtinject)
+                            npart,npart_old,npartoftype,dtinject)
  use part,      only:igas,massoftype,kill_particle,shuffle_part
  use partinject,only:add_or_update_particle
  use io,        only:master,iprint
@@ -119,11 +118,11 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,&
  integer, dimension(:), allocatable :: list1,list2
  real,    intent(in)    :: time, dtlast
  real,    intent(inout) :: xyzh(:,:), vxyzu(:,:), xyzmh_ptmass(:,:), vxyz_ptmass(:,:)
- integer, intent(inout) :: npart
+ integer, intent(inout) :: npart,npart_old
  integer, intent(inout) :: npartoftype(:)
  real,    intent(out)   :: dtinject
  real,    allocatable   :: xyzh_old(:,:),vxyzu_old(:,:)
- integer,    allocatable   :: list_temp(:)
+ integer,    allocatable   :: list_temp(:),list_test(:)
  real :: y0up,inc
  real :: y0,time2,dz
  integer :: i,nskip,ninj1,ninj2,ierr
@@ -149,6 +148,7 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,&
        xyzh_old  = xyzh
        vxyzu_old = vxyzu
        store_previous_run = .true.
+       print*,'Continuing simulation'
      endif
 
      ! Read setup parameters only at the beginning
@@ -174,7 +174,7 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,&
      call read_stream_ascii(cylinder_file1,nskip,mass,xyzh_cyl1,vxyzu_cyl1)
 
      !cylinder_file2 = "cylinder1.ascii"
-     call read_stream_ascii(cylinder_file1,nskip,mass,xyzh_cyl2,vxyzu_cyl2)
+     call read_stream_ascii(cylinder_file2,nskip,mass,xyzh_cyl2,vxyzu_cyl2)
 
      is_initialized = .true.  ! Set flag to true after initial setup
      if ((cylinder_file1==cylinder_file2) .and. (vinj1==vinj2) .and. (rstream1==rstream2))then
@@ -185,42 +185,29 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,&
      print *,'Particle mass:',massoftype(igas)
  endif
 
- !y0 = yshift!stream is from y=[y0-H,y0+H]
- !y0up = y0 +zstream1
  dz = offset*rstream1
  dtinject = dtinject_set
  inc=pi/180.*(inclination/2.) !angle of streams for x-axis
 
  !advance the first cylinder
- allocate(list_temp(np), stat=ierr)
- call advance_cylinder(list_temp,time,dtlast,np,yshift,rstream1,zstream1,vinj1,xyzh_cyl1(2,:),ninj1)
- do i =1,ninj1
-   call AddToList(list1,list_temp(i))
- end do
- deallocate(list_temp)
+ call advance_cylinder(list1,time,dtlast,np,yshift,rstream1,zstream1,vinj1,xyzh_cyl1(2,:),ninj1,store_previous_run)
 
  !inject "upper" stream
  if (ninj1>1e-2) then
-   call inject_streams(list1,npart,time,dtlast,vinj1,dz,inc,ninj1,xyzh_cyl1,&
+   call inject_streams(list1,npart,time,dtlast,vinj1,dz,inc,ninj1,zstream1,xyzh_cyl1,&
                            vxyzu_cyl1,npartoftype, xyzh, vxyzu,identical_streams,.true.)
  endif
 
- !advance the second cylinder if streams are not identical
+ !advance and inject the second cylinder if streams are not identical
  if (.not. identical_streams) then
-   allocate(list_temp(np), stat=ierr)
-   call advance_cylinder(list_temp,time,dtlast,np,yshift,rstream2,zstream2,vinj2,xyzh_cyl2(2,:),ninj2)
-   do i =1,ninj2
-     call AddToList(list2,list_temp(i))
-   end do
-   deallocate(list_temp)
+   call advance_cylinder(list2,time,dtlast,np,yshift,rstream2,zstream2,vinj2,xyzh_cyl2(2,:),ninj2,store_previous_run)
 
    !inject "lower" stream
    if (ninj2>1e-2) then
-     call inject_streams(list2,npart,time,dtlast,vinj2,dz,inc,ninj2,xyzh_cyl2,&
+     call inject_streams(list2,npart,time,dtlast,vinj2,dz,inc,ninj2,zstream2,xyzh_cyl2,&
                              vxyzu_cyl2,npartoftype, xyzh, vxyzu,identical_streams,.false.)
    endif
  endif
-
 
 
  !
@@ -382,44 +369,56 @@ end subroutine read_stream_ascii
 !
 ! rearrange particles in the cylinder and determine how many are injected
 !
-
-subroutine advance_cylinder(list_temp,time,dtlast,np,y0,rstream,zstream,vinj,ycyl,ninj)
+subroutine advance_cylinder(list,time,dtlast,np,y0,rstream,zstream,vinj,ycyl,ninj,store_previous_run)
+  use timestep, only : dtmax
   integer, intent(in) :: np
-  integer, intent(inout) :: list_temp(:)
+  logical, intent(in) :: store_previous_run
+  !integer, intent(inout) :: list(:)
   real,    intent(inout) :: ycyl(:)
   real,    intent(in) :: rstream,zstream,vinj,time,dtlast,y0
+  integer, allocatable,intent(out) :: list(:)
   integer,    intent(inout) :: ninj
-  real  :: tperiod,tcross,shift,y0up
+  real  :: tperiod,tcross,shift,y0up,dt,total_shift
   integer :: i,n,io
-
   y0up = y0 +zstream ! cylinder "top"
-  ninj=0
-  tperiod = zstream/vinj
-  do i = 1,np
+
+  ninj = 0
+  tperiod = zstream / vinj
+
+  ! if the simulation did not start at t=0, cylically rearrange cylinder to reach the distribution at t
+  if (store_previous_run) then
     shift = vinj*time
-    tcross = (ycyl(i) -y0)/vinj
+    do i = 1,np
+      tcross = (ycyl(i) -y0)/vinj
+      ! Apply periodic boundary condition
+      if (ycyl(i) - shift < y0) then
+        ycyl(i) = y0up - mod(y0up - (ycyl(i) - shift), zstream)
+      else
+        ycyl(i) = ycyl(i) - shift
+      endif
+    end do
+  endif
 
-    if ((ycyl(i) - shift)<y0) then
-      ycyl(i) = y0up - vinj*(time - tcross - floor((time-tcross)/tperiod)*tperiod)
+  shift = vinj * dtmax
+
+  do i = 1, np
+    tcross = (ycyl(i) - y0) / vinj
+    ! Update position within the cylinder considering periodic boundary
+    if ((ycyl(i) - shift) < y0) then
+      ycyl(i) = y0up - vinj * abs(dt - tcross)
+      ninj = ninj + 1
+      call AddToList(list, i)
     else
+      ! Regular shift within the cylinder
       ycyl(i) = ycyl(i) - shift
-    endif
-
-    if ((ycyl(i) - vinj*dtlast)<y0) then
-      !call AddToList(list,i)
-      ninj = ninj+1
-      list_temp(ninj) = i !maybe here?
     endif
   end do
 end subroutine advance_cylinder
 
-
-
-
 !
 ! Inject stream
 !
-subroutine inject_streams(list,npart,time,dtlast,vinj,dz,inc,ninj,xyzh_cyl,&
+subroutine inject_streams(list,npart,time,dtlast,vinj,dz,inc,ninj,zstream,xyzh_cyl,&
                         vxyzu_cyl, npartoftype, xyzh, vxyzu,identical_streams,upper_stream)
   use part,      only:igas
   use physcon,   only:pi
@@ -429,7 +428,7 @@ subroutine inject_streams(list,npart,time,dtlast,vinj,dz,inc,ninj,xyzh_cyl,&
   integer, intent(in) :: ninj
   integer, intent(inout) :: list(:),npartoftype(:)
   real,    intent(inout) :: xyzh_cyl(:,:),vxyzu_cyl(:,:),xyzh(:,:),vxyzu(:,:)
-  real,    intent(in) :: vinj,dz,time,dtlast,inc
+  real,    intent(in) :: vinj,dz,time,dtlast,inc,zstream
   integer,    intent(inout) :: npart
   real  :: xyzi1(3),xyzi2(3),vxyz1(3),vxyz2(3),u
   real,allocatable  :: xcyl(:),ycyl(:),zcyl(:),hcyl(:),ucyl(:)
@@ -445,7 +444,7 @@ subroutine inject_streams(list,npart,time,dtlast,vinj,dz,inc,ninj,xyzh_cyl,&
   do i=1,ninj
     if (identical_streams) then
        !upper stream
-       xyzi1 = (/xcyl(list(i)),ycyl(list(i))-vinj*dtlast,zcyl(list(i))+ dz/2./)
+       xyzi1 = (/xcyl(list(i)),(ycyl(list(i))-zstream)-vinj*dtlast,zcyl(list(i))+ dz/2./)
        vxyz1 = (/0.,-vinj,0./)
        !u = ucyl(list(i))
        call rotatevec(xyzi1,(/0.,0.,1./),pi/2.-inc)
@@ -454,7 +453,7 @@ subroutine inject_streams(list,npart,time,dtlast,vinj,dz,inc,ninj,xyzh_cyl,&
        call add_or_update_particle(igas, xyzi1, vxyz1, hcyl(list(i)),u, i_part, npart, npartoftype, xyzh, vxyzu)
 
        !lower stream
-       xyzi2 = (/xcyl(list(i)),-ycyl(list(i))+vinj*dtlast,zcyl(list(i)) - dz/2./)
+       xyzi2 = (/xcyl(list(i)),(-ycyl(list(i))+zstream)+vinj*dtlast,zcyl(list(i)) - dz/2./)
        vxyz2 = (/0.,vinj,0./)
        call rotatevec(xyzi2,(/0.,0.,1./),-(pi/2.-inc))
        call rotatevec(vxyz2,(/0.,0.,1./),-(pi/2.-inc))

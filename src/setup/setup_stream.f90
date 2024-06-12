@@ -10,7 +10,7 @@ module setup
 !
 ! :References: None
 !
-! :Owner: Daniel Price
+! :Owner: Taj Jankovič
 !
 ! :Runtime parameters: None
 !
@@ -37,6 +37,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use units,   only:set_units
  use physcon, only:au,solarm
  use timestep,       only:tmax,dtmax
+ use readwrite_infile,       only:nfulldump
  use io,             only:master,fatal
  use eos,             only:init_eos,finish_eos,gmw
  integer,           intent(in)    :: id
@@ -56,21 +57,22 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  time = 0.
  polyk = 0.
  gamma = 4./3.
+ gmw   = 0.5988
 
  npart = 0
  npartoftype(:) = 0
- massoftype = 1.
 
  !
  ! determine if the .in file exists
  !
  inname=trim(fileprefix)//'.in'
  inquire(file=inname,exist=iexist)
- if (.not. iexist) then
-    tmax  = 100.
-    dtmax = 1.0
-    ieos  = 2
- endif
+ !if (.not. iexist) then
+ tmax  = 30.
+ dtmax = 0.01
+ ieos  = 2
+ nfulldump = 1
+ !endif
  !
 
  !
@@ -91,6 +93,9 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
     call write_setupfile(setupfile,gamma,polyk)
     stop 'please check and edit .setup file and rerun phantomsetup'
  endif
+
+ ! particle mass
+ massoftype = stream%mpart
 
  !
  ! initialise the equation of state
@@ -120,7 +125,7 @@ subroutine setup_interactive(polyk,gamma,iexist,id,master,ierr)
  use prompting,     only:prompt
  use units,         only:select_unit
  use setstream,       only:set_stream_interactive
- use setunits,      only:set_units_interactive
+ use setunits,      only:set_units_interactive,dist_unit,mass_unit
  real, intent(out)    :: polyk,gamma
  logical, intent(in)  :: iexist
  integer, intent(in)  :: id,master
@@ -129,10 +134,17 @@ subroutine setup_interactive(polyk,gamma,iexist,id,master,ierr)
  ierr = 0
 
  ! units
- !call set_units_interactive(gr)
+ call prompt('Enter the desired units (0="code" or 1="solar")',stream%iunits)
+ if (stream%iunits ==1 ) then
+   dist_unit   = 'solarr'
+   mass_unit   = 'solarm'
+   call set_units_interactive()
+   write(*,'(a)') 'Using solar units'
+ else
+   write(*,'(a)') 'Using code units'
+ endif
 
  ! stream
- call set_stream_interactive(id,master,stream,ieos,polyk)
  !call prompt('Enter stream radius',stream%rstream,0.)
  !call prompt('Enter stream length',stream%zstream,0.)
  !call prompt('Enter stream mass',stream%mstream,0.)
@@ -145,6 +157,8 @@ subroutine setup_interactive(polyk,gamma,iexist,id,master,ierr)
  case(2)
     call prompt('Enter gamma (adiabatic index)',gamma,1.,7.)
  end select
+
+ call set_stream_interactive(id,master,stream,ieos,polyk)
 
  !if (need_polyk(stream%iprofile)) then
 !    call prompt('Enter polytropic constant (cs^2 if isothermal)',polyk,0.)
@@ -173,9 +187,13 @@ subroutine write_setupfile(filename,gamma,polyk)
  write(iunit,"(a)") '# '//trim(tagline)
  write(iunit,"(a)") '# input file for Phantom stream setup'
 
- call write_options_units(iunit,gr)
- !call write_options_stream(stream,iunit)
+ ! units
+ write(iunit,"(/,a)") '# options for units '
+ call write_inopt(stream%iunits,'iunits','Code units (0) or solar units (1)',iunit)
+ if (stream%iunits==1) call write_options_units(iunit)
+  !call write_options_stream(stream,iunit)
  call write_inopt(stream%np,'np','Number of particles',iunit)
+ call write_inopt(stream%mpart,'mpart','Particle mass',iunit)
  call write_inopt(stream%gamma,'gamma','Adiabatic index',iunit)
  call write_inopt(stream%rstream1,'rstream1','Radius of the 1st stream',iunit)
  call write_inopt(stream%zstream1,'zstream1','Length of the 1st stream along z-axis',iunit)
@@ -228,13 +246,15 @@ subroutine read_setupfile(filename,gamma,polyk,ierr)
 
  nerr = 0
 
- ! units
- call read_options_and_set_units(db,nerr,gr)
+ ! set units or keep code units
+ call read_inopt(stream%iunits,'iunits',db,errcount=nerr)
+ if (stream%iunits==1)   call read_options_and_set_units(db,nerr)
 
  ! stream options
  !call read_options_stream(stream,need_iso,ieos,polyk,db,nerr)
  call read_inopt(ieos,'ieos',db,errcount=nerr)
  call read_inopt(stream%np,'np',db,errcount=nerr)
+ call read_inopt(stream%mpart,'mpart',db,errcount=nerr)
  call read_inopt(stream%gamma,'gamma',db,errcount=nerr)
  call read_inopt(stream%rstream1,'rstream1',db,errcount=nerr)
  call read_inopt(stream%zstream1,'zstream1',db,errcount=nerr)

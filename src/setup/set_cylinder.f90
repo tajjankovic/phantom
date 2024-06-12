@@ -85,8 +85,8 @@ subroutine set_defaults_cylinder(cylinder)
  cylinder%yshift        = 4.
  cylinder%zshift        = 0.
  cylinder%initialtemp   = 0. ! temperature is assigned only if ieos=12 or do_radiation
- cylinder%tol_dens      = 0.1 ! criteria for being converged
- cylinder%maxits        = 3000
+ cylinder%tol_dens      = 0.01 ! criteria for being converged
+ cylinder%maxits        = 1000
  cylinder%dens_profile         = 'density_out.tab'
  cylinder%label         = ''
 end subroutine set_defaults_cylinder
@@ -261,9 +261,9 @@ subroutine set_cylinder(id,master,cylinder,xyzh,vxyzu,eos_vars,rad,&
                                       cylinder%zshift)
  endif
  ! change boundaries again to arbitrary large values of avoid "particles out bounds" errors
- call set_boundary(x_min=-100*cylinder%rcylinder,x_max=100*cylinder%rcylinder,&
-                  y_min=-100*cylinder%rcylinder,y_max=100*cylinder%rcylinder,&
-                  z_min=-100*cylinder%zcylinder,z_max=100*cylinder%zcylinder)
+ !call set_boundary(x_min=-100*cylinder%rcylinder,x_max=100*cylinder%rcylinder,&
+!                  y_min=-100*cylinder%rcylinder,y_max=100*cylinder%rcylinder,&
+!                  z_min=-100*cylinder%zcylinder,z_max=100*cylinder%zcylinder)
 
  !
  ! give the particles requested particle type:
@@ -692,6 +692,12 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  deallocate(xyzh_combined)
  deallocate(xyzh_relax)
 
+ !
+ ! set particle type thermal energy
+ !
+ do i=1,npart0
+    vxyzu(4,i)=1e-5
+ enddo
 
  i1 = 0
  if (present(npin)) i1 = npin  ! starting position in particle array
@@ -764,18 +770,19 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  nits = 0
  do while (.not. converged .and. nits < maxits)
     nits = nits + 1
+
     !
     ! shift particles by one "timestep"
     !
     call shift_particles(i1,npart0,xyzh,vxyzu,Rcylinder,Zcylinder,dt)
-    !call shift_particles(i1,npart,xyzh_combined,vxyzu,Rcylinder,Zcylinder,dt)
-
-
 
     !
     ! reset thermal energy and calculate information
     !
     call set_u_and_get_errors(i1,npart0,xyzh,vxyzu,rad,nt,mr,rho,r,rmax,rmserr)
+
+
+
     !
     ! compute energies and check for convergence
     !
@@ -826,8 +833,8 @@ subroutine relax_cylinder(nt,rho,pr,r,npart,npartoftype,massoftype,xyzh,Rcylinde
  !
  ! Incrementally delete particles used for relaxation alternating between low and high
  ! (I was getting "bad allocation" errors but if I incrementally delete while alternating there are no errors)
- high = 55000
- low = 5001
+ high = combined_size
+ low = combined_size-npart_add+1
  dN = 0
  do while (low <= high)
       if (mod(dN, 2) == 0) then
@@ -899,6 +906,11 @@ subroutine shift_particles(i1, npart, xyzh, vxyzu, r_cylinder, h_cylinder,dtmin)
     nlargeshift = 0
     force_const=1e-2
     fext(1:3,:) = 0.0
+    !$omp parallel do schedule(guided) default(none) &
+    !$omp shared(i1,npart,xyzh,vxyzu,fxyzu,fext,massoftype,ieos) &
+    !$omp private(i,dx,dti,cs,rhoi,hi) &
+    !$omp reduction(min:dtmin) &
+    !$omp reduction(+:nlargeshift)
 
     do i = i1 + 1, npart
         hi = xyzh(4,i)
@@ -908,37 +920,15 @@ subroutine shift_particles(i1, npart, xyzh, vxyzu, r_cylinder, h_cylinder,dtmin)
         !dti = 0.1 * hi / cs   ! local Courant timestep, i.e., h/cs
 
         !dti=0.1
-        ! Initialize external force to zero
 
         ! Calculate distance from the axis of the cylinder
-        distance_from_axis = sqrt(xyzh(1, i)**2. + xyzh(2, i)**2.)
-
-        ! Apply restoring force towards the cylinder's boundary
-        !if (distance_from_axis > r_cylinder-hi) then
-            ! Calculate the magnitude of the force, could be a function of the distance
-            ! A simple linear force that increases with distance:
-        !    restoring_force_mag = force_const*(distance_from_axis / r_cylinder)**0.9
-            ! Subtract the force vector to point towards the axis
-            ! Normalize the direction vector (x/r, y/r) and multiply by the magnitude
-        !    fext(1,i) = fext(1,i) - restoring_force_mag * (xyzh(1,i) / distance_from_axis)
-        !    fext(2,i) = fext(2,i) - restoring_force_mag * (xyzh(2,i) / distance_from_axis)
-        !endif
-        ! fix the direction of radial velocity
-        ! Check if particle is outside the cylinder
-        !if (distance_from_axis > r_cylinder-hi) then
-        !    damping_factor=1
-        !    vr = (vxyzu(1, i) * xyzh(1, i) + vxyzu(2, i) * xyzh(2, i)) / distance_from_axis
-        !    vr = - damping_factor * vr
-        !    v_theta = (-vxyzu(1, i) * xyzh(2, i) + vxyzu(2, i) * xyzh(1, i)) / distance_from_axis
-
-            ! Convert back to Cartesian velocity components
-        !    vxyzu(1, i) = vr * (xyzh(1, i) / distance_from_axis) + v_theta * (-xyzh(2, i) / distance_from_axis)
-        !    vxyzu(2, i) = vr * (xyzh(2, i) / distance_from_axis) + v_theta * ( xyzh(1, i) / distance_from_axis)
-        !endif
+        !distance_from_axis = sqrt(xyzh(1, i)**2. + xyzh(2, i)**2.)
 
         ! Calculate the asynchronous shift
-
         dx = 0.5 * dti**2 * (fxyzu(1:3, i))! + fext(1:3, i))
+        !dx = 0.5 * dti**2 * (fxyzu(1:3, i) * (rhoi/0.3184))
+
+
         if (dot_product(dx,dx) > hi**2) then
            dx = dx / sqrt(dot_product(dx,dx)) * hi  ! Avoid large shift in particle position
            nlargeshift = nlargeshift + 1
@@ -952,11 +942,16 @@ subroutine shift_particles(i1, npart, xyzh, vxyzu, r_cylinder, h_cylinder,dtmin)
 
         dtmin = min(dtmin,dti)   ! used to print a "time" in the output (but it is fake)
     enddo
+    !$omp end parallel do
+
     if (nlargeshift > 0) print*,'Warning: Restricted dx for ', nlargeshift, 'particles'
     !
     ! get forces on particles
     !
+    !print*,'force before:',sqrt(dot_product(fxyzu(1:3, 1),fxyzu(1:3, 1))),fxyzu(4, 1)
+
     call get_derivs_global()
+    !print*,'force after :',sqrt(dot_product(fxyzu(1:3, 1),fxyzu(1:3, 1)))
 end subroutine shift_particles
 
 
@@ -979,8 +974,8 @@ subroutine set_options_for_relaxation()
  ! turn on settings appropriate to relaxation
  !
  if (maxvxyzu >= 4) ieos = 2
- idamp = 1
- damp = 0.05
+ idamp = 1 ! change here
+ damp = 0.01
 end subroutine set_options_for_relaxation
 
 
@@ -994,7 +989,7 @@ end subroutine set_options_for_relaxation
 subroutine set_u_and_get_errors(i1, npart, xyzh, vxyzu, rad, nt, mr, rhotab,rtab,rmax, rmserr)
     use table_utils, only:yinterp
     use sortutils,   only:find_rank,r2func
-    use part,        only:rhoh, massoftype, igas, maxvxyzu, iorder=>ll
+    use part,        only:rhoh,fxyzu, massoftype, igas, maxvxyzu, iorder=>ll
     use dim,         only:do_radiation
     use eos,         only:gamma
     integer, intent(in) :: i1, npart, nt
@@ -1012,6 +1007,7 @@ subroutine set_u_and_get_errors(i1, npart, xyzh, vxyzu, rad, nt, mr, rhotab,rtab
     rho1 = yinterp(rhotab,rtab,0.)
 
     Pfactor = 2e-6 ! Target pressure at position ri
+    Pfactor = 1e-1 ! test
 
     rmax = 0.
     rmserr = 0.
@@ -1027,9 +1023,19 @@ subroutine set_u_and_get_errors(i1, npart, xyzh, vxyzu, rad, nt, mr, rhotab,rtab
 
         ! Calculate target pressure and adjust internal energy accordingly
         Ptarget = Pfactor * (rhoi / rhotarget)
-        !if (fix_entrop) then
-        !    vxyzu(4,i) = (Pratio * rhoi**(gamma-1.0)) / (gamma - 1.0)
-        vxyzu(4,i) = Ptarget / (rhoi * (gamma - 1.0)) !u=1e-5
+
+        if (( i .LT. 52) .AND. (i .GT. 51)) then
+          print*,'rho, u before:',i,rhoi,rhoi / rhotarget,vxyzu(4,i)
+        endif
+        !fxyzu(4,i) = Ptarget / (rhoi * (gamma - 1.0)) !u=1e-5
+        !vxyzu(4,i) = Ptarget / (rhoi * (gamma - 1.0)) !u=1e-5
+
+        vxyzu(4,i) = vxyzu(4,i)*(rhoi / rhotarget)**0.5 !u=1e-5
+        fxyzu(4,i) = vxyzu(4,i)*(rhoi / rhotarget)**0.5 !u=1e-5
+
+        if (( i .LT. 52) .AND. (i .GT. 51)) then
+          print*,'rho, u after :',i,rhoi,vxyzu(4,i)
+        endif
 
         ! Update rms error calculation
         rmserr = rmserr + (rhotarget - rhoi)**2
@@ -1081,7 +1087,7 @@ subroutine restore_original_options(i1,npart)
  idamp = 0
  damp = 0.
  vxyzu(1:3,i1+1:npart) = 0.
- vxyzu(4,i1+1:npart) = 1e-5 ! maybe change later?
+ vxyzu(4,i1+1:npart) = 1e-15 ! maybe change later?
 
 end subroutine restore_original_options
 

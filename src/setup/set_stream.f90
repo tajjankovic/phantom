@@ -31,7 +31,9 @@ module setstream
  ! to setup stream (these are per-stream, not per-simulation options)
  !
  type stream_t
+    integer :: iunits
     integer :: np
+    real :: mpart
     real :: gamma
     real :: rstream1
     real :: zstream1
@@ -73,7 +75,9 @@ subroutine set_defaults_stream(stream)
  !use units,   only:udist,umass
  !use physcon, only:solarm,solarr
  type(stream_t), intent(out) :: stream
- stream%np            = 1000
+ stream%iunits        = 0
+ stream%np            = 5000
+ stream%mpart         = 4e-4
  stream%gamma    = 4./3.
  !stream%mstream       = 1.0*real(solarm/umass)
  !stream%rstream       = 1.0*real(solarr/udist)
@@ -151,7 +155,7 @@ subroutine set_stream_interactive(id,master,stream,ieos,polyk)
 
  call prompt('Enter the number of particles in a cylinder',stream%np,1)
  !call prompt('Enter the number of particles in a cylinder',stream%np,1)
-
+ call prompt('Enter the particle mass',stream%mpart)
  call prompt('Enter the adiabatic index gamma',stream%gamma)
 
  !

@@ -169,7 +169,7 @@ ifeq ($(SETUP), cylinder)
 #   cylinder with a uniform or Gaussian density profile
     SETUPFILE= setup_cylinder.f90
     KNOWN_SETUP=yes
-    IND_TIMESTEPS=yes
+    IND_TIMESTEPS=no
     PERIODIC=yes
     RADIATION=no
 endif

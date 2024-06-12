@@ -55,6 +55,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use units,           only:set_units,select_unit
  use kernel,          only:hfact_default
  use eos,             only:init_eos,finish_eos,gmw
+ use options,      only:iexternalforce
  use part,            only:nptmass,xyzmh_ptmass,vxyz_ptmass,eos_vars,rad,kill_particle,shuffle_part
  use mpiutils,        only:reduceall_mpi
  use mpidomain,       only:i_belong
@@ -81,6 +82,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  polyk        = 1.0
  gamma        = 4./3.
  gmw         = 0.5988
+ nfulldump = 1
  hfact        = hfact_default
  relax_cylinder_in_setup = .false.
  write_rho_to_file = .false.
@@ -124,7 +126,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  ! Verify correct pre-processor commands
  !
  if (.not.gravity) then
-    iexternalforce = iext_densprofile
+    iexternalforce = 0
     write_rho_to_file = .true.
  endif
 
