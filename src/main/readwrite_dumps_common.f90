@@ -784,15 +784,15 @@ subroutine check_arrays(i1,i2,noffset,npartoftype,npartread,nptmass,nsinkpropert
  !
  ! radiation arrays
  !
- if (do_radiation) then
-    if (.not.all(got_rad)) then
-       if (id==master .and. i1==1) write(*,*) 'ERROR: RADIATION=yes but radiation arrays not found in Phantom dump file'
-       ierr = ierr + 1
-    endif
-    if (.not.got_radprop(ikappa)) then
-       if (id==master .and. i1==1) write(*,"(/,a,/)") 'WARNING: RADIATION=yes but opacity not found in Phantom dump file'
-    endif
- endif
+ !if (do_radiation) then
+ !   if (.not.all(got_rad)) then
+ !      if (id==master .and. i1==1) write(*,*) 'ERROR: RADIATION=yes but radiation arrays not found in Phantom dump file'
+ !      ierr = ierr + 1
+ !   endif
+ !   if (.not.got_radprop(ikappa)) then
+ !      if (id==master .and. i1==1) write(*,"(/,a,/)") 'WARNING: RADIATION=yes but opacity not found in Phantom dump file'
+ !   endif
+ !endif
 
  !
  ! MHD arrays

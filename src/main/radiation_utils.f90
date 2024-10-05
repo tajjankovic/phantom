@@ -30,6 +30,7 @@ module radiation_utils
  public :: get_opacity
  public :: get_1overmu
  public :: get_kappa
+ public :: get_kappa_abs ! here added
  real, public :: kappa_cgs=0.3
  ! following declared public to avoid compiler warnings
  public :: solve_internal_energy_implicit_substeps
@@ -408,6 +409,21 @@ end function get_kappa
 
 !--------------------------------------------------------------------
 !+
+!  get absorption opacity from u and rho in code units - here added
+!+
+!--------------------------------------------------------------------
+real function get_kappa_abs(opacity_type,u,cv,rho) result(kappa_a)
+ integer, intent(in) :: opacity_type
+ real, intent(in)    :: u,cv,rho
+ real                :: temp
+
+ temp = u/cv
+ call get_opacity_abs(opacity_type,rho,temp,kappa_a)
+
+end function get_kappa_abs
+
+!--------------------------------------------------------------------
+!+
 !  calculate opacities
 !+
 !--------------------------------------------------------------------
@@ -443,6 +459,50 @@ subroutine get_opacity(opacity_type,density,temperature,kappa)
  end select
 
 end subroutine get_opacity
+
+
+
+
+!--------------------------------------------------------------------
+!+
+!  calculate absorption opacity - here added
+!+
+!--------------------------------------------------------------------
+subroutine get_opacity_abs(opacity_type,density,temperature,kappa_a)
+ use mesa_microphysics, only:get_kappa_mesa
+ use units,             only:unit_density,unit_opacity
+ real, intent(in)  :: density, temperature
+ real, intent(out) :: kappa_a
+ integer, intent(in) :: opacity_type
+ real :: kapt,kapr,rho_cgs,kappa_cgs
+
+ select case(opacity_type)
+ case(1)
+    !
+    ! calculate opacity from the MESA tables
+    !
+    rho_cgs = density*unit_density
+    kappa_a = 9*1e-4*(rho_cgs/1e-11)*(temperature/1e5)**(-7./2.) ! Eq. 15 in Bonnerot et al. 2021
+    kappa_a = kappa_a/unit_opacity
+
+ case(2)
+    !
+    ! constant opacity
+    !
+    rho_cgs = density*unit_density
+    kappa_a = 9*1e-4*(rho_cgs/1e-11)*(temperature/1e5)**(-7./2.) ! Eq. 15 in Bonnerot et al. 2021
+    kappa_a = kappa_a/unit_opacity
+
+ case default
+    !
+    ! infinite opacity
+    !
+    kappa_a = huge(1.)
+
+ end select
+
+end subroutine get_opacity_abs
+
 
 
 !--------------------------------------------------------------------

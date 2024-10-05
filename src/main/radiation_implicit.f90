@@ -24,7 +24,7 @@ module radiation_implicit
 !
  use part,            only:ikappa,ilambda,iedd,idkappa,iradxi,icv,ifluxx,ifluxy,ifluxz,igas,rhoh,massoftype,imu
  use eos,             only:iopacity_type
- use radiation_utils, only:get_kappa,get_1overmu
+ use radiation_utils, only:get_kappa,get_1overmu,get_kappa_abs ! here added get_kappa_abs
  use eos,             only:get_cv
  implicit none
  integer, parameter :: ierr_failed_to_converge = 1,&
@@ -730,7 +730,7 @@ subroutine update_gas_radiation_energy(ivar,vari,npart,ncompactlocal,&
  real                :: u4term,u1term,u0term,pcoleni,dust_cooling,heatingISRi,dust_gas
  real                :: pres_numerator,pres_denominator,mui,U1i,E1i,Tgas,dUcomb,dEcomb
  real                :: residualE,residualU,maxerrU2old,Tgas4,Trad4,ck,ack
- real                :: Ei,Ui,cvi,opacityi,eddi
+ real                :: Ei,Ui,cvi,opacityi,eddi,opacityi_abs ! here added opacityi_abs
  real                :: maxerrE2i,maxerrU2i
 
  a_code = get_radconst_code()
@@ -854,7 +854,8 @@ subroutine update_gas_radiation_energy(ivar,vari,npart,ncompactlocal,&
        Tgas = Ui/cvi
        Tgas4 = Tgas**4
        Trad4 = rhoi*Ei/a_code
-       ck  = c_code*opacityi
+       opacityi_abs = get_kappa_abs(iopacity_type,Ui,cvi,rhoi) ! here added
+       ck  = c_code*opacityi_abs ! here added: initially ck  = c_code*opacityi
        ack = a_code*ck
 
        betaval  = ck*rhoi*dti
